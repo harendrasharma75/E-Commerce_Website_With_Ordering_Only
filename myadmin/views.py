@@ -1,113 +1,92 @@
-from django.shortcuts import render, redirect
-from Shop.models import Product
-from Shop.models import Order
-from Shop.models import OrderUpdate
-from Shop.forms import UpdateProduct
-from datetime import datetime
-from django.contrib.auth.decorators import login_required
-from django.contrib import auth
-from django.contrib.auth import logout
-from django.contrib.auth.models import User
+from django.shortcuts import render, redirect, HttpResponse
+from Shop.models import Product, Order, OrderUpdate
+from math import ceil
+import json
 # Create your views here.
 
-def adminlogin(request):
-    if request.method == 'POST':
-        user_id = request.POST.get('user_id')
-        password = request.POST.get('password')
 
-        user = auth.authenticate(username=user_id,password=password)
-        
-        if user is not None:
-            auth.login(request,user)
-            if request.GET.get('next',None):
-                return redirect(request.GET['next'])
-
-            return redirect('Add_Product','new')
-            
-
-    return render(request,'adminlogin.html')
-
-@login_required(login_url='/mysuperadmin')
-def admin_page(request,id):
-    if id == "new":
-        item = None
-    else:
-        item = Product.objects.get(id=id)
-
-    products = Product.objects.all()
-
-    if request.method=="POST":
-        id = request.POST.get("id")
-        if id == "":
-            prod = UpdateProduct(request.POST,request.FILES)
-            if prod.is_valid():
-                prod.save()
-           
-        else:
-            item = Product.objects.get(id=id)
-            print(item.prod_name)
-            prod = UpdateProduct(request.POST,request.FILES, instance = item)
-            if prod.is_valid():
-                prod.save()
-        item = None
+def index(request):
+    allprods = []
+    catprods = Product.objects.values('category','id')
+    cats = {item['category'] for item in catprods}
+    for cat in cats:
+        prod = Product.objects.filter(category=cat,status="Active")
+        if len(prod)==0:
+            continue
+        n = len(prod)
+        nSlides = n//4 +ceil((n/4)-(n//4))
+        allprods.append([prod,range(1,nSlides),nSlides])
 
     context = {
-        'products':products,
-
-        'item':item,
+        'allprods':allprods
     }
-    return render(request,'addproducts.html',context)
+    return render(request, 'index.html',context)
 
-@login_required(login_url='/mysuperadmin')
-def pending_order(request,id):
 
-    if id=="None":
-        search = None
-    else:
-        search = Order.objects.get(order_id=id)
+def checkout(request):
+    id = None
+    thank=False
+    if request.method=="POST":
+        items_json = request.POST.get('itemsJson', '')
+        amount = request.POST.get('amount', '')
+        name = request.POST.get('name', '')
+        email = request.POST.get('email', '')
+        address = request.POST.get('address1', '') + " " + request.POST.get('address2', '')
+        city = request.POST.get('city', '')
+        state = request.POST.get('state', '')
+        zip_code = request.POST.get('pin_code', '')
+        phone = request.POST.get('phone', '')
+        order = Order(items_json=items_json,amount=amount,email=email, name=name, address=address, city=city,
+                       state=state, zip_code=zip_code, phone=phone,order_status='Pending',delivery_status='Pending')
+        order.save()
+        thank = True
+        id = order.order_id
+        return render(request, 'checkout.html', {'thank':thank, 'id': id})        
     
-    if request.method=="POST":
-        id = request.POST.get("id")
-        name = request.POST.get("name")
-        mobile = request.POST.get("mobile")
-        remarks = request.POST.get("remarks")
-        order_status = request.POST.get("order_status")
-        delivery_status = request.POST.get("delivery_status")
-
-        search = Order.objects.filter(order_id=id,phone=mobile)
-        if len(search)>0:
-            search = Order.objects.get(order_id=id,phone=mobile)
-            search.order_status = order_status
-            search.delivery_status = delivery_status
-            search.remarks=remarks
-            search.save()
-
-            if order_status == 'Accepted' and remarks != "" and delivery_status != 'Delivered':
-                update = OrderUpdate(order_id=id, update_desc=remarks)
-                update.save()
-            
-            if delivery_status == 'Delivered':
-                remark = "Your Order has been delivered successfully"
-                search.delivery_date = datetime.now()
-                search.remarks = remark
-                search.save()
-                update = OrderUpdate(order_id=id, update_desc=remark)
-                update.save()
-
-            search = None
-            
-    pendings = Order.objects.filter(delivery_status='Pending')
-    delivered = Order.objects.filter(delivery_status='Delivered')
-    rejected = Order.objects.filter(delivery_status='Rejected')
-
     context = {
-        'search':search,
-        'pendings':pendings,
-        'delivered':delivered,
-        'rejected':rejected,
+        'thank':thank, 
+        'id': id
     }
-    return render(request,'pending_order.html',context)
+    return render(request,'checkout.html',context)
 
-def logout(request):
-    auth.logout(request)
-    return redirect('Admin')
+def product_view(request,id):
+   
+    product = Product.objects.filter(id=id)
+    
+    context = {
+        'product':product[0],
+    }
+    return render(request,'product_veiw.html',context)
+
+
+def tracker(request):
+    response = {}
+    if request.method=="POST":
+        orderId = request.POST.get('orderId', '')
+        mobile = request.POST.get('mobile', '')
+        try:
+            order = Order.objects.filter(order_id=orderId)
+    
+            if len(order)>0 and order[0].phone == mobile:
+                update = OrderUpdate.objects.filter(order_id=orderId)
+                updates = []
+                for item in update:
+                    updates.append({'text': item.update_desc, 'time': item.timestamp})
+                    # response = json.dumps([updates, order[0].items_json], default=str)
+                    # print(response)
+                    items = json.loads(order[0].items_json)
+                    response = {
+                        'updates':updates,
+                        'items':items,
+                        'order':order[0],
+                    }
+                # return HttpResponse(response)
+            else:
+                response = {
+                    'msg':'Order Id or Mobile Number is incorrect. Please try again with correct details.'
+                }
+        except Exception as e:
+            return HttpResponse('{}')
+
+
+    return render(request, 'tracker.html', response)
